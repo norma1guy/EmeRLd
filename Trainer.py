@@ -23,19 +23,15 @@ import os
 class Trainer :
     def __init__(self):
         
-        self.checkpoint_path = 'checkpoint/checkpoint.pt'
-        if os.path.exists(self.checkpoint_path):
-            print("Checkpoint found. Loading model...")
-            self.load_checkpoint(self.checkpoint_path)
-        else:
-            print("No checkpoint found. Starting fresh.")
+        self.checkpoint_path = 'data/checkpoint.pt'
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
         #Hyper Params
         self.num_cells = 256
         self.lr = 3e-4
         self.max_grad_norm = 1.0
-        self.frames_per_batch = 100
-        self.total_frames = 1000
+        self.frames_per_batch = 1000
+        self.total_frames = 1000000
         # PPO Params
         self.sub_batch_size = 64
         self.epochs = 10
@@ -92,20 +88,31 @@ class Trainer :
         
         self.optim = torch.optim.Adam(self.loss_module.parameters(),self.lr)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optim,self.total_frames // self.frames_per_batch,0.0)
+        self.start_iteration = 0
+        self.trained_frames = 0
+
+        if os.path.exists(self.checkpoint_path):
+            print("Checkpoint found. Loading model...")
+            self.load_checkpoint(self.checkpoint_path)
+        else:
+            print("No checkpoint found. Starting fresh.")
 
 
-    def save_checkpoint(self, path="checkpoint.pt"):
+    def save_checkpoint(self, path="data/checkpoint.pt"):
         checkpoint = {
             "actor": self.action_module.state_dict(),
             "critic": self.value_module.state_dict(),
             "optimizer": self.optim.state_dict(),
             "scheduler": self.scheduler.state_dict(),
+            "iteration": self.start_iteration,
+            "trained_frames": self.trained_frames,
         }
+
         torch.save(checkpoint, path)
         print(f"[Checkpoint] Saved to {path}")
 
 
-    def load_checkpoint(self, path="checkpoint.pt"):
+    def load_checkpoint(self, path="checkpoint/checkpoint.pt"):
         checkpoint = torch.load(path, map_location=self.device)
 
         self.action_module.load_state_dict(checkpoint["actor"])
@@ -113,14 +120,19 @@ class Trainer :
         self.optim.load_state_dict(checkpoint["optimizer"])
         self.scheduler.load_state_dict(checkpoint["scheduler"])
 
+        self.start_iteration = checkpoint.get("iteration", 0)
+        self.trained_frames = checkpoint.get("trained_frames", 0)
+
         print(f"[Checkpoint] Loaded from {path}")
+        print(f"Resuming from iteration {self.start_iteration}")
+        print(f"Frames trained: {self.trained_frames}")
 
     def train(self):
         logs = defaultdict(list)
-        pbar = tqdm(self.total_frames)
+        pbar = tqdm(total=self.total_frames)
         eval_str = ''
 
-        for i,tensordict_data in enumerate(self.collector):
+        for i,tensordict_data in enumerate(self.collector,start=self.start_iteration):
             for _ in range(self.epochs):
                 self.adv_module(tensordict_data)
                 data_view = tensordict_data.reshape(-1)
@@ -140,14 +152,18 @@ class Trainer :
             
             logs['reward'].append(tensordict_data['next','reward'].mean().item())
             pbar.update(tensordict_data.numel())
+            self.trained_frames += tensordict_data.numel()
+            self.start_iteration = i + 1
             cum_reward_str = (
                 f"average reward={logs['reward'][-1]: 4.4f} (init={logs['reward'][0]: 4.4f})"
             )
-            logs["step_count"].append(tensordict_data["step_count"].max().item())
+            logs["step_count"].append(
+                tensordict_data["next", "step_count"].max().item()
+            )
             stepcount_str = f"step count (max): {logs['step_count'][-1]}"
             logs['lr'].append(self.optim.param_groups[0]['lr'])
             lr_str = f"lr policy : {logs['lr'][-1]: 4.4f}"
-            if i % 10 == 0 :
+            if i > 0 and i % 10 == 0 :
                 self.save_checkpoint(self.checkpoint_path)
                 with set_exploration_type(ExplorationType.DETERMINISTIC),torch.no_grad():
                     eval_rollout = self.transformed_env.rollout(1000,self.action_module)

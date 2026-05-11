@@ -1,4 +1,5 @@
 from collections import defaultdict
+from dataclasses import dataclass
 
 class Map : 
     def __init__(self) :
@@ -101,3 +102,19 @@ class Map :
                             graph[a].add(b)
 
         return graph
+    
+
+class MapNode :
+
+    def __init__(self,id):
+
+        self.mapId = id
+        self.visited = {}
+
+    def update_visit(self, x, y):
+        if y in self.visited.get(x, []):
+            return 0
+
+        self.visited.setdefault(x, []).append(y)
+        return 1
+         

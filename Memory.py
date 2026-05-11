@@ -12,7 +12,7 @@ class Memory :
         return struct.unpack_from('?', self.ram, self.base + offset)[0]
 
     def read_u8(self,offset):
-        return self.ram[offset]
+        return self.ram[self.base + offset]
     
     def read_s8(self, offset):
         return struct.unpack_from('b', self.ram, self.base + offset)[0]
