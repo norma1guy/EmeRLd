@@ -11,10 +11,10 @@ class Actor(torch.nn.Module):
 
         self.actor_net = torch.nn.Sequential(
             torch.nn.Linear(256, 128),
-            torch.nn.Tanh(),
+            torch.nn.ReLU(),
             torch.nn.Linear(128, 128),
-            torch.nn.Tanh(),
-            torch.nn.Linear(128,8)
+            torch.nn.ReLU(),
+            torch.nn.Linear(128,7)
         )
 
     def forward(self, td):
@@ -32,9 +32,9 @@ class Critic(torch.nn.Module):
 
         self.critic_net = torch.nn.Sequential(
             torch.nn.Linear(256, 128),
-            torch.nn.Tanh(),
+            torch.nn.ReLU(),
             torch.nn.Linear(128, 128),
-            torch.nn.Tanh(),
+            torch.nn.ReLU(),
             torch.nn.Linear(128,1)
         )
 

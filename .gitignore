@@ -8,3 +8,4 @@ myshm.so
 /data
 /checkpoint
 /speedcheck.py
+/checkpoint.pt

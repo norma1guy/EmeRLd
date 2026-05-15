@@ -113,8 +113,8 @@ class MapNode :
 
     def update_visit(self, x, y):
         if y in self.visited.get(x, []):
-            return 0
+            return 1
 
         self.visited.setdefault(x, []).append(y)
-        return 1
+        return 0
          

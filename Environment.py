@@ -11,7 +11,7 @@ import torch
 
 class Environment(EnvBase) :
 
-    def __init__(self,td_params=None,seed=None,device='cuda'):
+    def __init__(self,td_params=None,seed=None,device='cuda' if torch.cuda.is_available() else 'cpu'):
 
         super().__init__(device=device,batch_size=[])
         self._make_spec()
@@ -45,6 +45,7 @@ class Environment(EnvBase) :
         self.rs32le = self.ewram.read_s32_le
         self.rs32be = self.ewram.read_s32_be
         self.iwru32le = self.iwram.read_u32_le
+        self.iwru8 = self.iwram.read_u8
         self.party_hp = torch.zeros(6, device=self.device,dtype=torch.float32)
         self.party_level = torch.zeros(6, device=self.device, dtype=torch.int64)
         self.party_status = torch.zeros(6, device=self.device, dtype=torch.int64)
@@ -88,20 +89,32 @@ class Environment(EnvBase) :
         self.badges = torch.zeros(8, device=self.device, dtype=torch.int64)
 
         self.out_td = TensorDict({}, batch_size=[])
+        self.battle_rewards = 0
+        self.battle_turns = 0
+        self.turn_active = 0
 
     def _get_state(self):
-        self.is_battle = 1  if self.ru32le(0x22fec) != 0 else 0
+        
 
+        # In battle from gMain + 0x439 3rd bit
+        in_battle_byte = self.iwru8(0x026f9) // 2
+        self.is_battle = in_battle_byte % 2
+        battle_type = self.ru32le(0x22fec)
         mapState = self.get_coords()
-        #print(mapState)
+        active,state = self._get_textbox_flags()
         badges = self.get_badges()
         party = self.get_party()
         hms = self.get_hms()
         player_battle_state,enemy_battle_state = self.get_battle_info()
+        battleoutcome = self.ru8(0x2433a)
 
         out = TensorDict(
             {
                 'inbattle' : torch.tensor([self.is_battle],dtype=torch.int64,device=self.device),
+                'battleoutcome' : torch.tensor([battleoutcome],dtype=torch.int64,device=self.device),
+                'battletype' : torch.tensor([battle_type],dtype=torch.int64,device=self.device),
+                'textactive' : torch.tensor([active],dtype=torch.int64,device=self.device),
+                'textstate' : torch.tensor([state],dtype=torch.int64,device=self.device),
                 'playerpokemon' : player_battle_state,
                 'enemypokemon' : enemy_battle_state,
                 'map' : mapState,
@@ -112,7 +125,7 @@ class Environment(EnvBase) :
             batch_size=[]
         )
         
-        return out
+        return out.to(device=self.device)
     
     def _make_spec(self):
 
@@ -120,6 +133,10 @@ class Environment(EnvBase) :
 
             observation = CompositeSpec(
                 inbattle = DiscreteTensorSpec(2, shape=(1,), dtype=torch.int64),
+                battleoutcome = DiscreteTensorSpec(5, shape=(1,), dtype=torch.int64),
+                battletype = UnboundedDiscreteTensorSpec(shape=(1,),dtype=torch.int64),
+                textactive = DiscreteTensorSpec(2, shape=(1,), dtype=torch.int64),
+                textstate = UnboundedDiscreteTensorSpec(shape=(1,),dtype=torch.int64),
                 playerpokemon = CompositeSpec(
                     att = UnboundedDiscreteTensorSpec(shape=(2,),dtype=torch.int64),
                     defn = UnboundedDiscreteTensorSpec(shape=(2,),dtype=torch.int64),
@@ -176,7 +193,7 @@ class Environment(EnvBase) :
         )
 
         self.action_spec = DiscreteTensorSpec(
-            n=8,
+            n=7,
             shape=(1,),
             dtype=torch.int64,
         )
@@ -197,69 +214,125 @@ class Environment(EnvBase) :
         rng = torch.manual_seed(seed)
         self.rng = rng
 
-    def calc_reward(self,prevState,nextState) :
+    def calc_reward(self,prev_state,next_state) :
         reward = 0
         # Badge reward
-        if prevState is None :
+        if prev_state is None :
             pass
-        elif nextState['badge'].sum() > prevState['badge'].sum() :
+        elif next_state['badge'].sum() > prev_state['badge'].sum() :
             reward += 10 
         
         # Movement reward
-        if not torch.equal(nextState['map'],prevState['map']) :
-            visited_flag = nextState['map'][3].item()
-            new_place = nextState['map'][4].item()
-            if visited_flag :
-                reward += self.move_decay * 0.05 if new_place else self.move_decay * 0.01
-                self.move_decay = 0.99
-            else :
-                self.move_decay = max(0.2, self.move_decay * 0.99)
-                reward += self.move_decay * 0.01
-
+        if not torch.equal(next_state['map'],prev_state['map']) :
+            visited_flag = next_state['map'][4].item()
+            new_place = next_state['map'][5].item()
+            if not visited_flag and new_place :
+                reward += 3
+        #print(next_state['inbattle'])      
 
         # HMs reward
-        if prevState is None :
+        if prev_state is None :
             pass
-        elif nextState['hms'].sum() > prevState['hms'].sum() :
+        elif next_state['hms'].sum() > prev_state['hms'].sum() :
             reward += 10
+
+        # PokeCenter reward
+        if not next_state['inbattle'] :
+            for i,j in zip(next_state['party']['hp'],prev_state['party']['hp']) :
+                if i > j and j.item() <= 0.3:
+                    reward += 1.5
+    
+
+
         
 
-        #Battle reward
-        prev_hp = prevState['party']['hp'].sum()
-        next_hp = nextState['party']['hp'].sum()
+        #Post-Battle reward
+        if not next_state['inbattle'].item() and prev_state['inbattle'].item():
+            #print(self.battle_turns)
+            prev_hp = prev_state['party']['hp'].sum()
+            next_hp = next_state['party']['hp'].sum()
+            party_count = self.ru8(0x244e9)
 
-        prev_lvl = prevState['party']['level'].sum()
-        next_lvl = nextState['party']['level'].sum()
+            prev_lvl = prev_state['party']['level'].sum()
+            next_lvl = next_state['party']['level'].sum()
 
-        prev_status = prevState['party']['status']
-        next_status = prevState['party']['status']
+            prev_status = prev_state['party']['status']
+            next_status = prev_state['party']['status']
 
-        # HP loss penalty
-        if next_hp < prev_hp:
-            reward -= 0.001 * (prev_hp - next_hp).item()
+            battle_outcome = next_state['battleoutcome']
 
-        # Status penalty
-        if (next_status != 0).any():
-            reward -= 0.01
+            # HP loss penalty
+            if next_hp < prev_hp:
+                reward -= 0.01 * (prev_hp - next_hp).item()
 
-        # Level reward
-        if next_lvl > prev_lvl:
-            reward += 0.001 * (next_lvl - prev_lvl).item()
+            # Status penalty
+            if (next_status != 0).any():
+                reward -= 0.2
 
-        # Whiteout penalty
-        if next_hp <= 0:
-            reward -= 1.0
+            # Level reward
+            if next_lvl > prev_lvl:
+                reward += 0.5 * (next_lvl - prev_lvl).item()
 
-        # Healing reward
-        if prev_hp <= 0 and next_hp > 0:
-            reward += 0.5
+            # Whiteout penalty
+            if next_hp <= 0:
+                reward -= 2.5
+
+            # Outcome reward
+            if battle_outcome == 1 :
+                reward += self.battle_rewards
+            if battle_outcome == 2:
+                reward -= 5
+
+            if battle_outcome == 4 and next_hp / party_count >= 0.3:
                 
+                #print(next_hp / partyCount)
+                reward += 0.3 * self.battle_rewards * (1 - pow(0.9,self.battle_turns)) - 5
+            else :
+                reward -= 5
+            self.battle_rewards = 0
+            self.battle_turns = 0
+
+        # In Battle Rewards        
+        else :
+            if prev_state['inbattle'] == 0 :
+                reward += 0.1
+            turn_action_number = self.ru8(0x24082)
+            if turn_action_number != 2 :
+                self.turn_active = 1
+
+            elif turn_action_number  == 2 and self.turn_active :
+                self.battle_turns += 1
+                self.turn_active = 0
+            enemy_prev_hp = prev_state['enemypokemon']['hp'].sum()
+            enemy_next_hp = next_state['enemypokemon']['hp'].sum()
+            enemy_prev_status = prev_state['enemypokemon']['status1'].sum()
+            enemy_next_status = next_state['enemypokemon']['status1'].sum()
+
+            player_prev_hp = prev_state['playerpokemon']['hp'].sum()
+            player_next_hp = next_state['playerpokemon']['hp'].sum()
+            player_prev_exp = prev_state['playerpokemon']['exp'].sum()
+            player_next_exp = prev_state['playerpokemon']['exp'].sum()
+
+
+            if enemy_next_hp < enemy_prev_hp :
+                hp_taken = (enemy_prev_hp - enemy_next_hp).item()
+                self.battle_rewards  += 0.25 * hp_taken 
+
+            if enemy_prev_status == 0 and enemy_next_status != 0 :
+                self.battle_rewards += 2
+
+            if player_next_hp < player_prev_hp :
+                self.battle_rewards -= 0.25 * (player_prev_hp - player_next_hp).item()
+            
+            if player_next_exp > player_prev_exp :
+                self.battle_rewards += 0.05 * (player_next_exp - player_prev_exp).item()
+        if reward > 10 :
+            reward = 10
         return torch.tensor(reward, dtype=torch.float32,device=self.device)
     
     def _step(self, tensordict):
 
-        active, state = self._get_textbox_flags()
-
+        
         action = tensordict.get('action')
         act_val = int(action)  
 
@@ -271,7 +344,8 @@ class Environment(EnvBase) :
 
         self.pyFlag.release()
 
-        done = False
+        # Defeating a gym is one episode
+        done = prev_obs['badge'].sum() != next_obs['badge'].sum()
         reward = reward.unsqueeze(0)
 
         done = torch.tensor(
@@ -293,7 +367,7 @@ class Environment(EnvBase) :
 
         self.luaFlag.acquire()
 
-        self.mm[:4] = struct.pack('I', 8)
+        self.mm[:4] = struct.pack('I', 7)
 
         self.pyFlag.release()
 
@@ -317,10 +391,8 @@ class Environment(EnvBase) :
         saveBlockAddr = self.iwru32le(0x5d8c) - 0x2000000
         base = saveBlockAddr + 0x690 + 339
 
-        read16 = self.ru16le  # cache function
-
         for i in range(8):
-            self.hms[i] = 1 if read16(base + 4 * i) else 0
+            self.hms[i] = 1 if self.ru16le(base + 4 * i) else 0
 
         return self.hms.clone()
 
@@ -383,14 +455,20 @@ class Environment(EnvBase) :
         return out.to(device=self.device)
     
     def get_badges(self):
+        # Flags are stored as bits
+        saveBlockAddr = self.iwru32le(0x5d8c) - 0x2000000
+        flags_start = saveBlockAddr + 0x1270
+        gym_flag = 0x868
+        gym_2_to_8 =  self.ru8(flags_start + gym_flag // 8)
 
-        gym_flag = 0x867
+        for i in range(7,0,-1) :
+            self.badges[i] = gym_2_to_8 % 2
+            gym_2_to_8 = gym_2_to_8 // 2
 
-        read_flag = self.ewram.read_flag 
-
-        for i in range(8):
-            self.badges[i] = 1 if read_flag(gym_flag) else 0
-            gym_flag += 1
+        gym1 = self.ru8(flags_start + gym_flag // 8 - 1)
+        for i in range(7):
+            gym1 = gym1 // 2
+        self.badges[0] = gym1
 
         return self.badges.clone()
     
@@ -416,104 +494,104 @@ class Environment(EnvBase) :
 
         p_count = 0
         e_count = 0
+        if self.is_battle :
+            for i in range(battlers):
+                mon = gBattleMons + i * size
 
-        for i in range(battlers):
-            mon = gBattleMons + i * size
+                attack = self.ru16le(mon + 0x2)
+                defense = self.ru16le(mon + 0x4)
+                speed = self.ru16le(mon + 0x6)
+                spA = self.ru16le(mon + 0x8)
+                spD = self.ru16le(mon + 0xa)
+                types = [self.ru8(mon + 0x21),self.ru8(mon + 0x22)]
+                pp = [self.ru8(mon + 0x24 + i) for i in range(4)]
+                statChanges = self.rs8(mon + 0x18)
+                status1 = self.ru32le(mon + 0x4C)
+                exp = self.ru32le(mon + 0x44)
+                ability = self.ru8(mon + 0x20)
+                moves = [self.ru16le(mon + 0x0C + 2 * i) for i in range(4)]
+                holdItem = self.ru16le(mon + 0x2E)
+                species = self.ru16le(mon)
 
-            attack = self.ru16le(mon + 0x2)
-            defense = self.ru16le(mon + 0x4)
-            speed = self.ru16le(mon + 0x6)
-            spA = self.ru16le(mon + 0x8)
-            spD = self.ru16le(mon + 0xa)
-            types = [self.ru8(mon + 0x21),self.ru8(mon + 0x22)]
-            pp = [self.ru8(mon + 0x24 + i) for i in range(4)]
-            statChanges = self.rs8(mon + 0x18)
-            status1 = self.ru32le(mon + 0x4C)
-            exp = self.ru32le(mon + 0x44)
-            ability = self.ru8(mon + 0x20)
-            moves = [self.ru16le(mon + 0x0C + 2 * i) for i in range(4)]
-            holdItem = self.ru16le(mon + 0x2E)
-            species = self.ru16le(mon)
+                lvl = self.ru8(mon + 0x2A)
+                hp = self.ru16le(mon + 0x28)
+                maxhp = self.ru16le(mon + 0x2C)
 
-            lvl = self.ru8(mon + 0x2A)
-            hp = self.ru16le(mon + 0x28)
-            maxhp = self.ru16le(mon + 0x2C)
-
-            if is_double:
-                if i < 2:
-                    idx = p_count
-                    self.p_att[idx] = attack
-                    self.p_defn[idx] = defense
-                    self.p_spe[idx] = speed
-                    self.p_spA[idx] = spA
-                    self.p_spD[idx] = spD
-                    self.p_lvl[idx] = lvl
-                    self.p_hp[idx] = hp / maxhp if maxhp else 0
-                    self.p_exp[idx] = exp
-                    self.p_ability[idx] = ability
-                    self.p_moves[idx].copy_(torch.as_tensor(
-                        moves,
-                        dtype=torch.int64,
-                        device=self.device
-                    ))
-                    self.p_item[idx] = holdItem
-                    self.p_species[idx] = species
-                    self.p_stat_changes[idx] = statChanges
-                    self.p_pp[idx].copy_(torch.as_tensor(
-                        pp,
-                        dtype=torch.int64,
-                        device=self.device
-                    ))
-                    self.p_types[idx].copy_(torch.as_tensor(
-                        types,
-                        dtype=torch.int64,
-                        device=self.device
-                    ))
-                    self.p_status[idx] = status1
-                    p_count += 1
+                if is_double:
+                    if i < 2:
+                        idx = p_count
+                        self.p_att[idx] = attack
+                        self.p_defn[idx] = defense
+                        self.p_spe[idx] = speed
+                        self.p_spA[idx] = spA
+                        self.p_spD[idx] = spD
+                        self.p_lvl[idx] = lvl
+                        self.p_hp[idx] = hp / maxhp if maxhp else 0
+                        self.p_exp[idx] = exp
+                        self.p_ability[idx] = ability
+                        self.p_moves[idx].copy_(torch.as_tensor(
+                            moves,
+                            dtype=torch.int64,
+                            device=self.device
+                        ))
+                        self.p_item[idx] = holdItem
+                        self.p_species[idx] = species
+                        self.p_stat_changes[idx] = statChanges
+                        self.p_pp[idx].copy_(torch.as_tensor(
+                            pp,
+                            dtype=torch.int64,
+                            device=self.device
+                        ))
+                        self.p_types[idx].copy_(torch.as_tensor(
+                            types,
+                            dtype=torch.int64,
+                            device=self.device
+                        ))
+                        self.p_status[idx] = status1
+                        p_count += 1
+                    else:
+                        idx = e_count
+                        self.e_lvl[idx] = lvl
+                        self.e_hp[idx] = hp / maxhp if maxhp else 0
+                        e_count += 1
                 else:
-                    idx = e_count
-                    self.e_lvl[idx] = lvl
-                    self.e_hp[idx] = hp / maxhp if maxhp else 0
-                    e_count += 1
-            else:
-                if i == 0:
-                    idx = 0
-                    self.p_att[idx] = attack
-                    self.p_defn[idx] = defense
-                    self.p_spe[idx] = speed
-                    self.p_spA[idx] = spA
-                    self.p_spD[idx] = spD
-                    self.p_lvl[idx] = lvl
-                    self.p_hp[idx] = hp / maxhp if maxhp else 0
-                    self.p_exp[idx] = exp
-                    self.p_ability[idx] = ability
-                    self.p_moves[idx].copy_(torch.as_tensor(
-                        moves,
-                        dtype=torch.int64,
-                        device=self.device
-                    ))
-                    self.p_item[idx] = holdItem
-                    self.p_species[idx] = species
-                    self.p_stat_changes[idx] = statChanges
-                    self.p_pp[idx].copy_(torch.as_tensor(
-                        pp,
-                        dtype=torch.int64,
-                        device=self.device
-                    ))
-                    self.p_types[idx].copy_(torch.as_tensor(
-                        types,
-                        dtype=torch.int64,
-                        device=self.device
-                    ))
-                    self.p_status[idx] = status1
-                else:
-                    idx = e_count
-                    self.e_lvl[idx] = lvl
-                    self.e_hp[idx] = hp / maxhp if maxhp else 0
-                    e_count += 1
+                    if i == 0:
+                        idx = 0
+                        self.p_att[idx] = attack
+                        self.p_defn[idx] = defense
+                        self.p_spe[idx] = speed
+                        self.p_spA[idx] = spA
+                        self.p_spD[idx] = spD
+                        self.p_lvl[idx] = lvl
+                        self.p_hp[idx] = hp / maxhp if maxhp else 0
+                        self.p_exp[idx] = exp
+                        self.p_ability[idx] = ability
+                        self.p_moves[idx].copy_(torch.as_tensor(
+                            moves,
+                            dtype=torch.int64,
+                            device=self.device
+                        ))
+                        self.p_item[idx] = holdItem
+                        self.p_species[idx] = species
+                        self.p_stat_changes[idx] = statChanges
+                        self.p_pp[idx].copy_(torch.as_tensor(
+                            pp,
+                            dtype=torch.int64,
+                            device=self.device
+                        ))
+                        self.p_types[idx].copy_(torch.as_tensor(
+                            types,
+                            dtype=torch.int64,
+                            device=self.device
+                        ))
+                        self.p_status[idx] = status1
+                    else:
+                        idx = e_count
+                        self.e_lvl[idx] = lvl
+                        self.e_hp[idx] = hp / maxhp if maxhp else 0
+                        e_count += 1
 
-        self.double_battle = False
+            self.double_battle = False
 
         pM = TensorDict({
             'att': self.p_att,
@@ -524,7 +602,6 @@ class Environment(EnvBase) :
             'hp': self.p_hp,
             'lvl': self.p_lvl,
             'ability': self.p_ability,
-            'lvl': self.p_lvl,
             'pp': self.p_pp,
             'exp': self.p_exp,
             'status1': self.p_status,
@@ -533,13 +610,13 @@ class Environment(EnvBase) :
             'species': self.p_species,
             'holdItem' : self.p_item,
             'moves' : self.p_moves,
-        }, batch_size=[])
+        }, batch_size=[],device=self.device)
 
         eM = TensorDict({
             'hp': self.e_hp,
             'lvl': self.e_lvl,
             'status1': self.e_status,
-        }, batch_size=[])
+        }, batch_size=[],device=self.device)
 
         return pM, eM
         

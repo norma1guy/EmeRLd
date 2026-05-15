@@ -88,7 +88,7 @@ class StateEncoder(nn.Module):
         self.enemy_encoder = EnemyPokemonEncoder()
         self.party_encoder = nn.Linear(2, 128)
         self.global_mlp = nn.Sequential(
-            nn.Linear(1 + 8 * 2,32),
+            nn.Linear(5 + 8 * 2,32),
             nn.ReLU(),
         )
         self.final = nn.Sequential(
@@ -112,6 +112,10 @@ class StateEncoder(nn.Module):
         map = state['map']
         global_vecs = torch.cat([
             state['inbattle'].float(),
+            state['battleoutcome'].float(),
+            state['battletype'].float(),
+            state['textactive'].float(),
+            state['textstate'].float(),
             state['badge'].float(),
             state['hms'].float()
         ], dim=-1)

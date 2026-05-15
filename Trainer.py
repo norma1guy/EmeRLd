@@ -38,7 +38,7 @@ class Trainer :
         self.clip_epsi = 0.2
         self.gamma = 0.99
         self.lmda = 0.95
-        self.entropy = 1e-4
+        self.entropy = 0.05
         self.base_env = Environment()
         self.transformed_env = TransformedEnv(
             Environment(),
@@ -129,11 +129,15 @@ class Trainer :
 
     def train(self):
         logs = defaultdict(list)
-        pbar = tqdm(total=self.total_frames)
+        pbar = tqdm(total=self.total_frames - self.trained_frames)
         eval_str = ''
 
         for i,tensordict_data in enumerate(self.collector,start=self.start_iteration):
+            logs["loss_objective"] = []
+            logs["loss_critic"] = []
+            logs["loss_entropy"] = []
             for _ in range(self.epochs):
+                #os.system('clear')
                 self.adv_module(tensordict_data)
                 data_view = tensordict_data.reshape(-1)
                 self.replay.empty()
@@ -145,10 +149,26 @@ class Trainer :
                                   + loss_vals['loss_critic']
                                   + loss_vals['loss_entropy']
                                 )
+                    logs["loss_objective"].append(loss_vals["loss_objective"].item())
+                    logs["loss_critic"].append(loss_vals["loss_critic"].item())
+                    logs["loss_entropy"].append(loss_vals["loss_entropy"].item())
+                    logs["adv_mean"].append(subdata["advantage"].mean().item())
+                    logs["adv_std"].append(subdata["advantage"].std().item())
+                    self.optim.zero_grad()
                     loss_value.backward()
                     torch.nn.utils.clip_grad_norm_(self.loss_module.parameters(),self.max_grad_norm)
                     self.optim.step()
-                    self.optim.zero_grad()
+            
+
+
+            logs["policy_loss"].append(np.mean(logs['loss_objective']))
+            logs["critic_loss"].append(np.mean(logs['loss_critic']))
+            logs["entropy_loss"].append(np.mean(logs['loss_entropy']))
+            ppo_str = (
+                f"policy_loss={logs['policy_loss'][-1]:.4f}, "
+                f"critic_loss={logs['critic_loss'][-1]:.4f}, "
+                f"entropy={logs['entropy_loss'][-1]:.4f}\n"
+            )
             
             logs['reward'].append(tensordict_data['next','reward'].mean().item())
             pbar.update(tensordict_data.numel())
@@ -178,7 +198,7 @@ class Trainer :
                     f"eval step-count: {logs['eval step_count'][-1]}"
                 )
                 del eval_rollout
-            pbar.set_description(", ".join([eval_str, cum_reward_str, stepcount_str, lr_str]))
+            pbar.set_description("||".join([eval_str, cum_reward_str, stepcount_str, lr_str,ppo_str]))
             self.scheduler.step()
 
 
