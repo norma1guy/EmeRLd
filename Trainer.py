@@ -1,4 +1,4 @@
-import torch 
+import torch,os,sys,logging,json
 from torchrl.data import TensorDictReplayBuffer, LazyMemmapStorage
 from Environment import Environment
 from Policy import Actor,Critic
@@ -18,7 +18,14 @@ from torchrl.modules import ProbabilisticActor, ValueOperator
 from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
 from tqdm import tqdm
-import os 
+from logging.handlers import SysLogHandler
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+handler = SysLogHandler(address='/dev/log')
+formatter = logging.Formatter('%(name)s: %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 class Trainer :
     def __init__(self):
@@ -31,7 +38,7 @@ class Trainer :
         self.lr = 3e-4
         self.max_grad_norm = 1.0
         self.frames_per_batch = 1000
-        self.total_frames = 1000000
+        self.total_frames = 10000000
         # PPO Params
         self.sub_batch_size = 64
         self.epochs = 10
@@ -42,9 +49,7 @@ class Trainer :
         self.base_env = Environment()
         self.transformed_env = TransformedEnv(
             Environment(),
-            Compose(
-                StepCounter(),
-            )
+            Compose()
         )
         
         self.policy_module = TensorDictModule(Actor().to(self.device),
@@ -109,7 +114,7 @@ class Trainer :
         }
 
         torch.save(checkpoint, path)
-        print(f"[Checkpoint] Saved to {path}")
+        tqdm.write(f"[Checkpoint] Saved to {path}")
 
 
     def load_checkpoint(self, path="checkpoint/checkpoint.pt"):
@@ -127,9 +132,21 @@ class Trainer :
         print(f"Resuming from iteration {self.start_iteration}")
         print(f"Frames trained: {self.trained_frames}")
 
+    def log_metrics(self,avg_reward, init_reward, step_count, lr, policy_loss, critic_loss, entropy):
+        data = {
+            "avg_reward": avg_reward,
+            "init_reward": init_reward,
+            "step_count": step_count,
+            "lr": lr,
+            "policy_loss": policy_loss,
+            "critic_loss": critic_loss,
+            "entropy": entropy,
+        }
+        logger.info(json.dumps(data))
+
     def train(self):
         logs = defaultdict(list)
-        pbar = tqdm(total=self.total_frames - self.trained_frames)
+        pbar = tqdm(total=self.total_frames - self.trained_frames,dynamic_ncols=False,file=sys.stderr)
         eval_str = ''
 
         for i,tensordict_data in enumerate(self.collector,start=self.start_iteration):
@@ -167,7 +184,7 @@ class Trainer :
             ppo_str = (
                 f"policy_loss={logs['policy_loss'][-1]:.4f}, "
                 f"critic_loss={logs['critic_loss'][-1]:.4f}, "
-                f"entropy={logs['entropy_loss'][-1]:.4f}\n"
+                f"entropy={logs['entropy_loss'][-1]:.4f}"
             )
             
             logs['reward'].append(tensordict_data['next','reward'].mean().item())
@@ -178,7 +195,7 @@ class Trainer :
                 f"average reward={logs['reward'][-1]: 4.4f} (init={logs['reward'][0]: 4.4f})"
             )
             logs["step_count"].append(
-                tensordict_data["next", "step_count"].max().item()
+                tensordict_data["next", "steps"].max().item()
             )
             stepcount_str = f"step count (max): {logs['step_count'][-1]}"
             logs['lr'].append(self.optim.param_groups[0]['lr'])
@@ -198,7 +215,9 @@ class Trainer :
                     f"eval step-count: {logs['eval step_count'][-1]}"
                 )
                 del eval_rollout
-            pbar.set_description("||".join([eval_str, cum_reward_str, stepcount_str, lr_str,ppo_str]))
+            #logger.info("||".join([eval_str, cum_reward_str, stepcount_str, lr_str,ppo_str]))
+            self.log_metrics(logs['reward'][-1],logs['reward'][0],logs['step_count'][-1],logs['lr'][-1],logs['policy_loss'][-1],logs['critic_loss'][-1],logs['entropy_loss'][-1])
+            #pbar.set_postfix_str("||".join([eval_str, cum_reward_str, stepcount_str, lr_str,ppo_str]))
             self.scheduler.step()
 
 
