@@ -97,6 +97,7 @@ class Environment(EnvBase) :
         self.battles = 0
         self.poke_centers = PokeMonCenter('map_groups.json')
         self.steps = 0
+        self.whiteouts = 0
 
     def _get_state(self):
         
@@ -296,6 +297,7 @@ class Environment(EnvBase) :
                 reward += self.battle_rewards
             if battle_outcome == 2:
                 reward -= 1
+                self.whiteouts += 1
 
             if battle_outcome == 4 and next_hp / party_count <= 0.3:
                 reward += min(0.3 * self.battle_rewards * (1 - pow(0.9,self.battle_turns)) - 5,1) / self.battles if self.battles else min(0.3 * self.battle_rewards * (1 - pow(0.9,self.battle_turns)) - 5,1)
@@ -386,7 +388,7 @@ class Environment(EnvBase) :
         # Defeating all gyms ends the episode
         done = next_obs['badge'].sum() == 8
         terminated = torch.tensor(
-            [True if next_obs['party']['hp'].sum().item() == 0 else False],
+            [True if self.whiteouts == 5 else False],
             dtype=torch.bool,
             device=self.device
         )
@@ -445,6 +447,7 @@ class Environment(EnvBase) :
         self.turn_active = 0
         self.battle_turns = 0
         self.steps = 0
+        self.whiteouts = 0
         #print("RESET CALLED")
 
         return tensordict

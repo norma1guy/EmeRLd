@@ -37,10 +37,10 @@ class Trainer :
         self.num_cells = 256
         self.lr = 3e-4
         self.max_grad_norm = 1.0
-        self.frames_per_batch = 1000
+        self.frames_per_batch = 5000
         self.total_frames = 10000000
         # PPO Params
-        self.sub_batch_size = 64
+        self.sub_batch_size = 256
         self.epochs = 10
         self.clip_epsi = 0.2
         self.gamma = 0.99
@@ -208,7 +208,7 @@ class Trainer :
                     logs["eval reward (sum)"].append(
                         eval_rollout["next", "reward"].sum().item()
                     )
-                logs["eval step_count"].append(eval_rollout["step_count"].max().item())
+                logs["eval step_count"].append(eval_rollout["steps"].max().item())
                 eval_str = (
                     f"eval cumulative reward: {logs['eval reward (sum)'][-1]: 4.4f} "
                     f"(init: {logs['eval reward (sum)'][0]: 4.4f}), "
