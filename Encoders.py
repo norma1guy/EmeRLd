@@ -78,6 +78,55 @@ class EnemyPokemonEncoder(nn.Module):
 
         return self.enemy_mlp(x)
     
+class PixelEncoder(nn.Module) :
+
+    def __init__(self,output_dim=512) :
+        super().__init__()
+
+        self.conv = nn.Sequential(
+            nn.Conv2d(
+                in_channels=3,
+                out_channels=32,
+                kernel_size=8,
+                stride=4
+            ),
+            nn.ReLU(),
+            nn.Conv2d(
+                in_channels=32,
+                out_channels=64,
+                kernel_size=4,
+                stride=2
+            )
+            ,
+            nn.ReLU(),
+            nn.Conv2d(
+                in_channels=64,
+                out_channels=64,
+                kernel_size=3,
+                stride=1
+            )
+        )
+        
+        with torch.no_grad() :
+            dummy = torch.zeros(1,3,160,240)
+            conv_out = self.conv(dummy)
+            conv_size = conv_out.flatten(1).shape[1]
+
+        self.fc = nn.Linear(conv_size,output_dim)
+
+    def forward(self, x):
+        if x.shape[-4] == 1:
+            x = x.squeeze(-4)
+
+        batch_shape = x.shape[:-3]
+
+        x = x.flatten(0, -4)
+        x = self.conv(x)
+        x = x.flatten(1)
+        x = torch.relu(self.fc(x))
+        x = x.unflatten(0, batch_shape)
+
+        return x
 
 
 class StateEncoder(nn.Module):
@@ -86,13 +135,14 @@ class StateEncoder(nn.Module):
 
         self.player_encoder = PlayerPokemonEncoder()
         self.enemy_encoder = EnemyPokemonEncoder()
+        self.pixel_encoder = PixelEncoder()
         self.party_encoder = nn.Linear(2, 128)
         self.global_mlp = nn.Sequential(
-            nn.Linear(5 + 8 * 2,32),
+            nn.Linear(7 + 8 * 2,32),
             nn.ReLU(),
         )
         self.final = nn.Sequential(
-            nn.Linear(128 * 3 + 7 + 32,256),
+            nn.Linear(128 * 3 + 7 + 32 + 512,256),
             nn.ReLU(),
         )
 
@@ -103,6 +153,9 @@ class StateEncoder(nn.Module):
 
         enemy = self.enemy_encoder(state['enemypokemon'])
         enemy = enemy.mean(dim=-2)
+
+        pixels = self.pixel_encoder(state['pixelbuffer'])
+        pixels = pixels.squeeze(1)
 
         partyhp = state['party']['hp'].mean(dim=-1, keepdim=True)
         partylvl = (state['party']['level'].float()/100.0).mean(dim=-1, keepdim=True)
@@ -117,11 +170,12 @@ class StateEncoder(nn.Module):
             state['textactive'].float(),
             state['textstate'].float(),
             state['badge'].float(),
-            state['hms'].float()
+            state['hms'].float(),
+            state['startmenu'].float(),
         ], dim=-1)
         global_vecs = self.global_mlp(global_vecs)
-
-        x = torch.cat([player,enemy,party,map,global_vecs], dim=-1)
+    
+        x = torch.cat([player,enemy,party,map,pixels,global_vecs], dim=-1)
 
         return self.final(x)
 

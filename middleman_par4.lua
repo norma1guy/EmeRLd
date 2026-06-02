@@ -1,7 +1,7 @@
 --Load functions
 package.cpath = package.cpath .. ";/home/pmv/Desktop/RL/CustomBiz/BizHawk/output/Lua/RL/?.so"
-mmap = require('myshm')
-shm = mmap.create_shm()
+mmap = require('par_shm')
+shm = mmap.create_shm('4')
 input_map = {[0] = 'Up',[1] = 'Down',[2] = 'Left',[3] = 'Right',[4] = 'A',[5] = 'B',[6] = 'Start',[7] = 'load'}
 frames = 0
 inputs = {

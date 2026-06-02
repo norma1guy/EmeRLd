@@ -1,25 +1,22 @@
 import torch,os,sys,logging,json
-from torchrl.data import TensorDictReplayBuffer, LazyMemmapStorage
-from Environment import Environment
+from Environment import  ParallelEnvironment
 from Policy import Actor,Critic
 from collections import defaultdict
 import numpy as np
-from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from tensordict.nn.distributions import NormalParamExtractor
 from torchrl.collectors import SyncDataCollector
 from torchrl.data.replay_buffers import ReplayBuffer
 from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
 from torchrl.data.replay_buffers.storages import LazyTensorStorage
-from torchrl.envs import (Compose, DoubleToFloat, ObservationNorm, StepCounter,
-                          TransformedEnv)
-from torchrl.envs.utils import check_env_specs, ExplorationType, set_exploration_type
+from torchrl.envs import Compose, ParallelEnv,TransformedEnv
+from torchrl.envs.utils import check_env_specs
 from torchrl.modules import ProbabilisticActor, ValueOperator
 from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
 from tqdm import tqdm
 from logging.handlers import SysLogHandler
-
+#os.environ['PYTORCH_CUDA_ALLOC_CONF']='expandable_segments:True' Cannot be used for parallel
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 handler = SysLogHandler(address='/dev/log')
@@ -37,7 +34,7 @@ class Trainer :
         self.num_cells = 256
         self.lr = 3e-4
         self.max_grad_norm = 1.0
-        self.frames_per_batch = 5000
+        self.frames_per_batch = 300
         self.total_frames = 10000000
         # PPO Params
         self.sub_batch_size = 256
@@ -46,12 +43,24 @@ class Trainer :
         self.gamma = 0.99
         self.lmda = 0.95
         self.entropy = 0.05
-        self.base_env = Environment()
-        self.transformed_env = TransformedEnv(
-            Environment(),
-            Compose()
+        self.transformed_env = ParallelEnv(
+            3,
+            [
+                lambda: TransformedEnv(
+                    ParallelEnvironment('1'),
+                    Compose()
+                ),
+                lambda: TransformedEnv(
+                    ParallelEnvironment('2'),
+                    Compose()
+                ),
+                lambda: TransformedEnv(
+                    ParallelEnvironment('3'),
+                    Compose()
+                )  
+            ]
         )
-        
+        check_env_specs(self.transformed_env)   
         self.policy_module = TensorDictModule(Actor().to(self.device),
                                               in_keys=['observation'],
                                               out_keys=['logits']
@@ -71,8 +80,8 @@ class Trainer :
                                            self.action_module,
                                            frames_per_batch=self.frames_per_batch,
                                            total_frames=self.total_frames,
-                                           device=self.device,
-                                           split_trajs=False)
+                                           device= self.device,
+                                           split_trajs=True)
         
         self.replay = ReplayBuffer(storage=LazyTensorStorage(max_size=self.frames_per_batch),
                                    sampler=SamplerWithoutReplacement(),
@@ -158,7 +167,7 @@ class Trainer :
                 self.adv_module(tensordict_data)
                 data_view = tensordict_data.reshape(-1)
                 self.replay.empty()
-                self.replay.extend(data_view.to(self.device))
+                self.replay.extend(data_view)
                 for _ in range(self.frames_per_batch // self.sub_batch_size):
                     subdata = self.replay.sample(self.sub_batch_size)
                     loss_vals = self.loss_module(subdata.to(self.device))
@@ -195,26 +204,27 @@ class Trainer :
                 f"average reward={logs['reward'][-1]: 4.4f} (init={logs['reward'][0]: 4.4f})"
             )
             logs["step_count"].append(
-                tensordict_data["next", "steps"].max().item()
+                tensordict_data["next", "envsteps"].max().item()
             )
             stepcount_str = f"step count (max): {logs['step_count'][-1]}"
             logs['lr'].append(self.optim.param_groups[0]['lr'])
             lr_str = f"lr policy : {logs['lr'][-1]: 4.4f}"
             if i > 0 and i % 10 == 0 :
                 self.save_checkpoint(self.checkpoint_path)
-                with set_exploration_type(ExplorationType.DETERMINISTIC),torch.no_grad():
-                    eval_rollout = self.transformed_env.rollout(1000,self.action_module)
+                #torch.cuda.empty_cache()
+                '''with set_exploration_type(ExplorationType.DETERMINISTIC),torch.no_grad():
+                    eval_rollout = self.transformed_env.rollout(250,self.action_module)
                     logs['eval reward'].append(eval_rollout['next','reward'].mean().item())
                     logs["eval reward (sum)"].append(
                         eval_rollout["next", "reward"].sum().item()
                     )
-                logs["eval step_count"].append(eval_rollout["steps"].max().item())
+                logs["eval step_count"].append(eval_rollout["envsteps"].max().item())
                 eval_str = (
                     f"eval cumulative reward: {logs['eval reward (sum)'][-1]: 4.4f} "
                     f"(init: {logs['eval reward (sum)'][0]: 4.4f}), "
                     f"eval step-count: {logs['eval step_count'][-1]}"
                 )
-                del eval_rollout
+                del eval_rollout'''
             #logger.info("||".join([eval_str, cum_reward_str, stepcount_str, lr_str,ppo_str]))
             self.log_metrics(logs['reward'][-1],logs['reward'][0],logs['step_count'][-1],logs['lr'][-1],logs['policy_loss'][-1],logs['critic_loss'][-1],logs['entropy_loss'][-1])
             #pbar.set_postfix_str("||".join([eval_str, cum_reward_str, stepcount_str, lr_str,ppo_str]))
