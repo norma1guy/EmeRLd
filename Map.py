@@ -6,13 +6,20 @@ class MapNode :
 
         self.mapId = id
         self.visited = {}
+        self.visited_count = {}
 
     def update_visit(self, x, y):
         if y in self.visited.get(x, []):
             return 1
-
         self.visited.setdefault(x, []).append(y)
         return 0
+    
+    def update_count(self,x,y):
+        key = (self.mapId,x,y)
+        if key in self.visited_count.keys() :
+            self.visited_count[key] += 1
+        else :
+            self.visited_count[key] = 1
     
 
 class PokeMonCenter :

@@ -34,7 +34,7 @@ class Trainer :
         self.num_cells = 256
         self.lr = 3e-4
         self.max_grad_norm = 1.0
-        self.frames_per_batch = 300
+        self.frames_per_batch = 400
         self.total_frames = 10000000
         # PPO Params
         self.sub_batch_size = 256
@@ -136,6 +136,7 @@ class Trainer :
 
         self.start_iteration = checkpoint.get("iteration", 0)
         self.trained_frames = checkpoint.get("trained_frames", 0)
+
 
         print(f"[Checkpoint] Loaded from {path}")
         print(f"Resuming from iteration {self.start_iteration}")

@@ -263,9 +263,9 @@ class Environment(EnvBase) :
             if next_state['map'][3].item() == 1 and next_state['party']['hp'].sum() / party_count < 0.3:
                 reward += 0.5 
             for i,j in zip(next_state['party']['hp'],prev_state['party']['hp']) :
-                if i > j and j.item() <= 0.3:
+                if i.item() > j.item() and j.item() <= 0.3:
                     reward += 1.5
-    
+                    
         # NPC interaction reward
         active,status = self._get_textbox_flags()
         if active :
@@ -323,13 +323,15 @@ class Environment(EnvBase) :
             self.player_battle_mon.update(
                 hp=next_state['playerpokemon']['hp'].sum().item(),
                 exp=next_state['playerpokemon']['exp'].sum().item(),
-                status=next_state['playerpokemon']['status1'].sum().item()
+                status=next_state['playerpokemon']['status1'].sum().item(),
+                lvl=next_state['playerpokemon']['lvl'].sum().item(),
             )
 
             #Enemy
             self.enemy_battle_mon.update(
                 hp=next_state['enemypokemon']['hp'].sum().item(),
-                status=next_state['enemypokemon']['status1'].sum().item()
+                status=next_state['enemypokemon']['status1'].sum().item(),
+                lvl=next_state['enemypokemon']['lvl'].sum().item(),
             )
             reward += 0.1
             self.battles += 1
@@ -828,6 +830,8 @@ class ParallelEnvironment(EnvBase) :
         self.npcs_seen = {}
         self.player_battle_mon = BattlePokemon()
         self.enemy_battle_mon = BattlePokemon()
+        self.new_playermon = 0
+        self.new_enemymon = 0
         self.out_td = TensorDict({}, batch_size=[])
         self.battle_rewards = 0
         self.battle_turns = 0
@@ -837,6 +841,8 @@ class ParallelEnvironment(EnvBase) :
         self.steps = 0
         self.whiteouts = 0
         self.stucksteps = 0
+        self.story_rewards = {}
+        self.nodes_visit_count = {}
 
 
     def _get_state(self):
@@ -851,15 +857,18 @@ class ParallelEnvironment(EnvBase) :
         badges = self.get_badges()
         party = self.get_party()
         hms = self.get_hms()
-        player_battle_state,enemy_battle_state = self.get_battle_info()
+        player_battle_state,enemy_battle_state,action_cursor,move_cursor = self.get_battle_info()
         battleoutcome = self.ru8(0x2433a)
         menu_flags = self._get_start_menu()
         pixels = torch.from_numpy(self.pixels.rgb).float() / 255.0
         pixels = pixels.permute(2,0,1).unsqueeze(0)
+        story_flags = self._get_game_intro_flags()
 
         out = TensorDict(
             {
                 'inbattle' : torch.tensor([self.is_battle],dtype=torch.int64,device=self.device),
+                'battleactioncursor' : torch.tensor([action_cursor],dtype=torch.int64,device=self.device),
+                'battlemovecursor' : torch.tensor([move_cursor],dtype=torch.int64,device=self.device),
                 'battleoutcome' : torch.tensor([battleoutcome],dtype=torch.int64,device=self.device),
                 'battletype' : torch.tensor([battle_type],dtype=torch.int64,device=self.device),
                 'textactive' : torch.tensor([active],dtype=torch.int64,device=self.device),
@@ -872,6 +881,7 @@ class ParallelEnvironment(EnvBase) :
                 'hms' : hms,
                 'startmenu' : menu_flags,
                 'pixelbuffer' : pixels,
+                'storyflags' : story_flags,
             },
             batch_size=[]
         )
@@ -885,6 +895,8 @@ class ParallelEnvironment(EnvBase) :
 
             observation = CompositeSpec(
                 inbattle = DiscreteTensorSpec(2, shape=(1,), dtype=torch.int64),
+                battleactioncursor = DiscreteTensorSpec(4, shape=(1,), dtype=torch.int64),
+                battlemovecursor = DiscreteTensorSpec(4, shape=(1,), dtype=torch.int64),
                 battleoutcome = DiscreteTensorSpec(5, shape=(1,), dtype=torch.int64),
                 battletype = UnboundedDiscreteTensorSpec(shape=(1,),dtype=torch.int64),
                 textactive = DiscreteTensorSpec(2, shape=(1,), dtype=torch.int64),
@@ -950,6 +962,23 @@ class ParallelEnvironment(EnvBase) :
                     low=0.00,
                     high=1.0,
                     dtype=torch.float32,
+                ),
+                storyflags = CompositeSpec(
+                    clock = DiscreteTensorSpec(
+                        n =2,
+                        shape=(1,),
+                        dtype=torch.int64,
+                    ),
+                    rivalmom = DiscreteTensorSpec(
+                        n = 2,
+                        shape = (1,),
+                        dtype= torch.int64,
+                    ),
+                    profrescue = DiscreteTensorSpec(
+                        n = 2,
+                        shape = (1,),
+                        dtype = torch.int64,
+                    )
                 )
             ),
             envsteps = UnboundedDiscreteTensorSpec(
@@ -981,57 +1010,95 @@ class ParallelEnvironment(EnvBase) :
         rng = torch.manual_seed(seed)
         self.rng = rng
 
-    def calc_reward(self,prev_state,next_state) :
+    def calc_reward(self,prev_state,next_state,action) :
         reward = 0
         party_count = self.ru8(0x244e9)
+        #print("REWARD CALLED")
+        reward -= 0.001
+
+
+        # Story reward
+
+        story_flags = next_state['storyflags']
+        
+        for key,value in story_flags.items():
+            #print(key,value.item())
+            if value.item() and self.story_rewards.get(key,0) == 0:
+                reward += 10
+                self.story_rewards[key] = 1
+        #print(story_flags)
+        # Reward system is blocked till clock is set
+        if not self.story_rewards.get('clock',0) :
+            return [torch.tensor(reward, dtype=torch.float32,device=self.device),self.stucksteps >= 3000]
+        
+    
+
         
         # Stuck Counter
         current_location = (next_state['map'][0].item(),next_state['map'][1].item(),next_state['map'][4].item())
         previous_location = (prev_state['map'][0].item(),prev_state['map'][1].item(),prev_state['map'][4].item())
-        if current_location == previous_location :
+        if current_location == previous_location and not next_state['inbattle']:
             self.stucksteps += 1
         else :
             self.stucksteps = 0 
+
+        if self.stucksteps >= 500 :
+            reward -= 0.01
 
         # Badge reward
         if prev_state is None :
             pass
         elif next_state['badge'].sum() > prev_state['badge'].sum() :
-            reward += 10 
+            reward += 100 
+            self.battles = 0
         
         # Movement reward
         if not torch.equal(next_state['map'],prev_state['map']) :
-            visited_flag = next_state['map'][5].item()
+            x = next_state['map'][0].item()
+            y = next_state['map'][1].item()
+            prev_x = prev_state['map'][0].item()
+            prev_y = prev_state['map'][1].item()
+            prev_map_id = prev_state['map'][4].item()
+            key1 = (self.curr_map_node,x,y)
+            key2 = (prev_map_id,prev_x,prev_y)
+
+            # Decaying reward for visiting a new tile based on the number of visits there
+            if key1 !=  key2 :
+                self.visited[self.curr_map_node].update_count(x,y)
+                count = self.visited[self.curr_map_node].visited_count.get(key1,1)
+                reward += 0.1 * np.exp(-0.99 * count)
+
+            # Decaying reward for visiting a new town/route/cave based on number
             new_place = next_state['map'][6].item()
-            if not visited_flag and new_place :
-                reward += 1
-                #print(69)
-        #print(next_state['inbattle'])      
+            if new_place :
+                self.nodes_visit_count.setdefault(self.curr_map_node,1)
+                reward += 20 * np.exp(-0.99 * self.nodes_visit_count[self.curr_map_node])
 
         # HMs reward
         if prev_state is None :
             pass
         elif next_state['hms'].sum() > prev_state['hms'].sum() :
-            reward += 10
+            reward += 50
 
-        # PokeCenter reward
+        # PokeCenter reward (reset number of battles for higher rewards for battles)
         if not next_state['inbattle'] :
             if next_state['map'][3].item() == 1 and next_state['party']['hp'].sum() / party_count < 0.3:
                 reward += 0.5 
             for i,j in zip(next_state['party']['hp'],prev_state['party']['hp']) :
                 if i > j and j.item() <= 0.3:
                     reward += 1.5
+                    self.battles = 0
     
-        # NPC interaction reward
+        # Interaction reward ( maybe add reward for interaction with objects?)
         active,status = self._get_textbox_flags()
         if active :
             npcs = self._get_npcs()
-
+            # NPCs
             for key,npc in npcs.items() :
                 diff1 = abs(next_state['map'][0].item() - npc[0])
                 diff2 = abs(next_state['map'][1].item() - npc[1])
                 if ((diff1 == 0 and diff2 == 1) or (diff2 == 0 and diff1 == 1)) and self.npcs_seen[key] == 0 :
-                    reward += 0.1
+                    reward += 1
                     self.npcs_seen[key] += 1
                     break
         
@@ -1045,7 +1112,7 @@ class ParallelEnvironment(EnvBase) :
             next_hp = next_state['party']['hp'].sum()
             prev_lvl = prev_state['party']['level'].sum()
             next_lvl = next_state['party']['level'].sum()
-            next_status = prev_state['party']['status']
+            next_status = next_state['party']['status']
             battle_outcome = next_state['battleoutcome']
 
             # Status penalty
@@ -1054,46 +1121,48 @@ class ParallelEnvironment(EnvBase) :
 
             # Level reward
             if next_lvl > prev_lvl:
-                reward += 1
+                reward += 0.5 * np.exp(-0.99 * self.battles)
 
             # Outcome reward
             if battle_outcome == 1 :
-                reward += self.battle_rewards
+                reward += 1 * np.exp(-0.99 * self.battles)
             if battle_outcome == 2:
-                reward -= 1
+                reward -= 2
                 self.whiteouts += 1
 
             if battle_outcome == 4 and next_hp / party_count <= 0.3:
-                reward += min(0.3 * self.battle_rewards * (1 - pow(0.9,self.battle_turns)) - 5,1) / self.battles if self.battles else min(0.3 * self.battle_rewards * (1 - pow(0.9,self.battle_turns)) - 5,1)
+                reward += 0.5 * np.exp(-0.99 * self.battles)
             elif battle_outcome == 4 and next_hp / party_count > 0.3 :
-                reward -= 0.5
+                if self.player_battle_mon.lvl - self.enemy_battle_mon.lvl <= 2 :
+                    reward += 1 * np.exp(-0.99 * self.battles)
+                else :
+                    reward -= 1.5
             self.battle_rewards = 0
             self.battle_turns = 0
             self.player_battle_mon.reset()
             self.enemy_battle_mon.reset()
-            #print('Post Battle Reward ',reward)
-
+        
         # Battle initialization
         elif next_state['inbattle'].item() and not prev_state['inbattle'].item() :
-
-            #Player
-            self.player_battle_mon.update(
-                hp=next_state['playerpokemon']['hp'].sum().item(),
-                exp=next_state['playerpokemon']['exp'].sum().item(),
-                status=next_state['playerpokemon']['status1'].sum().item()
-            )
-
-            #Enemy
-            self.enemy_battle_mon.update(
-                hp=next_state['enemypokemon']['hp'].sum().item(),
-                status=next_state['enemypokemon']['status1'].sum().item()
-            )
-            reward += 0.1
             self.battles += 1
-            #print(self.player_battle_mon.hp,self.enemy_battle_mon.hp)
+        
             
         # In Battle Rewards        
         elif next_state['inbattle'].item() and prev_state['inbattle'].item():
+            #Player Previous Mon
+            self.player_battle_mon.update(
+                hp=prev_state['playerpokemon']['hp'].sum().item(),
+                exp=prev_state['playerpokemon']['exp'].sum().item(),
+                status=prev_state['playerpokemon']['status1'].sum().item(),
+                lvl=prev_state['playerpokemon']['lvl'].sum().item(),
+            )
+
+            #Enemy Previous Mon
+            self.enemy_battle_mon.update(
+                hp=prev_state['enemypokemon']['hp'].sum().item(),
+                status=prev_state['enemypokemon']['status1'].sum().item(),
+                lvl=prev_state['enemypokemon']['lvl'].sum().item(),
+            )
             turn_action_number = self.ru8(0x24082)
             if turn_action_number != 2 :
                 self.turn_active = 1
@@ -1110,45 +1179,39 @@ class ParallelEnvironment(EnvBase) :
             player_next_hp = next_state['playerpokemon']['hp'].sum().item()
             player_next_exp = next_state['playerpokemon']['exp'].sum().item()
 
-            #print('ENEMY:',enemy_next_hp,self.enemy_battle_mon.hp)
-            #print('PLAYER:',player_next_hp,self.player_battle_mon.hp)
+            if self.enemy_battle_mon.hp == 0 :
+                self.new_enemymon = 1
+            if self.player_battle_mon.hp == 0 :
+                self.new_playermon = 1
 
             if enemy_next_hp < self.enemy_battle_mon.hp :
-                hp_taken = (self.enemy_battle_mon.hp - enemy_next_hp)
-                self.battle_rewards  += 0.25 * hp_taken
+                reward += 0.1
                 self.enemy_battle_mon.update(hp=enemy_next_hp)
 
             if self.enemy_battle_mon.status == 0 and enemy_next_status != 0 :
-                self.battle_rewards += 0.5
+                reward += 0.1
                 self.enemy_battle_mon.update(status=enemy_next_status)
 
             if player_next_hp < self.player_battle_mon.hp :
-                hp_lost = (self.player_battle_mon.hp - player_next_hp)
-                self.battle_rewards -= 0.25 * hp_lost
+                reward -= 0.02
                 self.player_battle_mon.update(hp=player_next_hp)
             
-            if player_next_exp > self.player_battle_mon.hp :
-                exp_gained = (player_next_exp - self.player_battle_mon.exp)
-                self.battle_rewards += 0.05 * min(5,exp_gained)
+            if player_next_exp > self.player_battle_mon.exp :
+                reward += 0.2
                 self.player_battle_mon.update(exp=player_next_exp)
             
-        '''if reward > 10 :
-            reward = 10'''
-        return [torch.tensor(reward, dtype=torch.float32,device=self.device),self.stucksteps >= 500]
+        return [torch.tensor(reward, dtype=torch.float32,device=self.device),self.stucksteps >= 3000]
     
     def _step(self, tensordict):
 
         
         action = tensordict.get('action')
-        #print("ACTION SHAPE:", action.shape)
         act_val = int(action)  
-        #print(action.shape)
         prev_obs = tensordict['observation']  
         self.luaFlag.acquire()
         self.mm[:4] = struct.pack("I", act_val)
         next_obs = self._get_state()
-        reward,stuck_flag = self.calc_reward(prev_obs, next_obs)
-        #print('Stuck',self.stucksteps,stuck_flag)
+        reward,stuck_flag = self.calc_reward(prev_obs, next_obs,act_val)
         self.pyFlag.release()
 
         # Defeating all gyms ends the episode
@@ -1206,8 +1269,6 @@ class ParallelEnvironment(EnvBase) :
         self.steps = 0
         self.whiteouts = 0
         self.stucksteps = 0
-        #print("RESET CALLED")
-        #print(tensordict['terminated'].item(),tensordict['done'].item(),tensordict['envsteps'].item())
         
         return tensordict
             
@@ -1232,7 +1293,6 @@ class ParallelEnvironment(EnvBase) :
             start = gObjectEvents + i * 36
             info = self.ru8(start + 0x02)
             dir = self.ru8(start + 24)
-            #print(start)
             is_player = (info >> (info.bit_length() - 1) & 1) if info else 0
             current_coords = [self.rs16le(start + 16 + i * 2) for i in range(2)]
             #sprite_id = self.ru8(start + 4)
@@ -1242,25 +1302,39 @@ class ParallelEnvironment(EnvBase) :
             local_id = self.ru8(start + 8)
             map_num = self.ru8(start + 9)
             map_group = self.ru8(start + 10)
-            if is_player :
+            if is_player and local_id != 255 :
                 key = (local_id,map_num,map_group)
                 npcs[key] = current_coords
                 if key not in self.npcs_seen.keys() :
                     self.npcs_seen[key] = 0
-            
-            
-            
-            '''print({
-                'is_player' : is_player,
-                'direction' : dir,
-                'sprite' : sprite_id,
-                'grapics' : graphics_id,
-                'mov_type' : mov_type,
-                'trainer_type' : trainer_type,
-                'coords' : current_coords
-            })'''
+
         return npcs
-        #print('FUUUUUUUUUUUUCCCCCCCCCCCCCCKKKKKKKKKKKKKKKKKKKKK')
+
+    def _get_game_intro_flags(self):
+        saveBlockAddr = self.iwru32le(0x5d8c) - 0x2000000
+        flags_start = saveBlockAddr + 0x1270
+        story_flags = 10
+
+        clock_flag = (self.ru8(flags_start + story_flags) // 2) % 2
+        rival_mom_flag = (self.ru8(flags_start + story_flags) // pow(2,7) % 2)
+        save_prof_flag = (self.ru8(flags_start + story_flags) // 4) % 2
+
+        return TensorDict(
+            {
+                "clock": torch.tensor([clock_flag],
+                                    dtype=torch.int64,
+                                    device=self.device),
+                "rivalmom": torch.tensor([rival_mom_flag],
+                                        dtype=torch.int64,
+                                        device=self.device),
+                "profrescue": torch.tensor([save_prof_flag],
+                                        dtype=torch.int64,
+                                        device=self.device),
+            },
+            batch_size=[]
+        )
+
+        
     
     def get_hms(self):
         saveBlockAddr = self.iwru32le(0x5d8c) - 0x2000000
@@ -1275,14 +1349,15 @@ class ParallelEnvironment(EnvBase) :
     def get_coords(self):
 
         saveBlockAddr = self.iwru32le(0x5d8c) - 0x2000000
-
-        x = self.rs16le(saveBlockAddr)
-        y = self.rs16le(saveBlockAddr + 0x2)
+        object_event = 0x37350
+        x = self.rs16le(object_event + 0x10)
+        y = self.rs16le(object_event + 0x12)
         direction = self.rs16le(0x037368) // 17
         mapId = self.ru16le(saveBlockAddr + 0x32)
         map_group = self.rs8(saveBlockAddr + 0x04)
         map_num = self.rs8(saveBlockAddr + 0x05)
         new_place = None
+        self.curr_map_node = mapId
         is_poke_center = 1 if (map_group >> 8) + map_num in self.poke_centers.pcs.values() else 0
         if mapId not in self.visited:
             node = MapNode(mapId)
@@ -1357,6 +1432,8 @@ class ParallelEnvironment(EnvBase) :
 
         battlers = self.ru8(0x2406c)
         is_double = battlers > 2
+        action_cursor = self.ru8(0x244ac)
+        move_cursor = self.ru8(0x244b0)
 
         # reset tensors
         self.p_att.zero_()
@@ -1497,7 +1574,7 @@ class ParallelEnvironment(EnvBase) :
             'status1': self.e_status.clone(),
         }, batch_size=[],device=self.device)
 
-        return pM, eM
+        return [pM, eM,action_cursor,move_cursor]
         
     
         

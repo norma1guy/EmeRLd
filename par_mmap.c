@@ -11,6 +11,7 @@
 #include <lua.h>
 #include <lauxlib.h>
 #include <lualib.h>
+#include <errno.h>
 #define SIZE 256 * 1024 //EWRAM
 #define SIZE2 32 * 1024 //IWRAM
 #define SIZE3 240 * 160 //Pixels
@@ -100,7 +101,9 @@ static int open_shm(lua_State *L){
     strcat(name,proc_num);
 
     int shm_fd = shm_open(name,O_RDWR,0666);
-    if (shm_fd == -1) return luaL_error(L,"shm_open failed");
+    if (shm_fd == -1) {
+        return luaL_error(L, "shm_open failed: %s", strerror(errno));
+    }
 
     shm *ptr = mmap(NULL,sizeof(shm),PROT_READ | PROT_WRITE,MAP_SHARED, shm_fd,0);
     close(shm_fd);

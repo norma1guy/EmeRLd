@@ -52,6 +52,7 @@ class Pixels :
                                     count=count,
                                     offset=offset
                                     ).reshape(160,240)
+        self.inbattle = False
         self.rgb = self._decode()
         
     def _decode(self):
@@ -61,3 +62,9 @@ class Pixels :
 
         rgb = np.stack([r, g, b], axis=-1)
         return rgb
+    
+    def update_pixels(self,inbattle) :
+        self.inbattle = inbattle
+
+
+

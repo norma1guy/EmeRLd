@@ -133,12 +133,37 @@ class StateEncoder(nn.Module):
     def __init__(self):
         super().__init__()
 
+        self.token_dim = 256
+
+        #Battle Transformer
+        self.player_proj = nn.Linear(128, self.token_dim)
+        self.enemy_proj = nn.Linear(128, self.token_dim)
+        self.side_embedding = nn.Embedding(2, self.token_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=256,
+            nhead=8,
+            batch_first=True
+        )
+
+        self.pokemon_transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=2
+        )
+        self.time_transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=256,
+                nhead=8,
+                batch_first=True
+            ),
+            num_layers=2
+        )
+
         self.player_encoder = PlayerPokemonEncoder()
         self.enemy_encoder = EnemyPokemonEncoder()
         self.pixel_encoder = PixelEncoder()
         self.party_encoder = nn.Linear(2, 128)
         self.global_mlp = nn.Sequential(
-            nn.Linear(7 + 8 * 2,32),
+            nn.Linear(11 + 8 * 2,32),
             nn.ReLU(),
         )
         self.final = nn.Sequential(
@@ -148,11 +173,31 @@ class StateEncoder(nn.Module):
 
     def forward(self,state) :
 
-        player = self.player_encoder(state['playerpokemon'])
-        player = player.mean(dim=-2)
+        player = self.player_proj(self.player_encoder(state['playerpokemon']))
+        enemy = self.enemy_proj(self.enemy_encoder(state['enemypokemon']))
+        player_tokens = (player + self.side_embedding.weight[0])
+        enemy_tokens = (enemy + self.side_embedding.weight[1])
+        pokemon_tokens = torch.cat([player_tokens, enemy_tokens],dim=-2)
+        
+        
+        orig_shape = pokemon_tokens.shape[:-2]
 
-        enemy = self.enemy_encoder(state['enemypokemon'])
-        enemy = enemy.mean(dim=-2)
+        N = pokemon_tokens.shape[-2]
+        D = pokemon_tokens.shape[-1]
+
+        pokemon_tokens = pokemon_tokens.reshape(-1, N, D)
+
+        pokemon_tokens = self.pokemon_transformer(
+            pokemon_tokens
+        )
+
+        battle_repr = pokemon_tokens.mean(dim=1)
+
+        battle_repr = battle_repr.reshape(
+            *orig_shape,
+            D
+        )
+        battle_repr = self.time_transformer(battle_repr)
 
         pixels = self.pixel_encoder(state['pixelbuffer'])
         pixels = pixels.squeeze(1)
@@ -161,10 +206,12 @@ class StateEncoder(nn.Module):
         partylvl = (state['party']['level'].float()/100.0).mean(dim=-1, keepdim=True)
         party = torch.cat([partyhp,partylvl], dim=-1)
         party = self.party_encoder(party)
+        storyflags = torch.cat([v.float() for _, v in state["storyflags"].items()],dim=-1)
 
         map = state['map']
         global_vecs = torch.cat([
-            state['inbattle'].float(),
+            state['battleactioncursor'].float(),
+            state['battlemovecursor'].float(),
             state['battleoutcome'].float(),
             state['battletype'].float(),
             state['textactive'].float(),
@@ -172,12 +219,20 @@ class StateEncoder(nn.Module):
             state['badge'].float(),
             state['hms'].float(),
             state['startmenu'].float(),
+            storyflags,
         ], dim=-1)
+        #print(global_vecs)
         global_vecs = self.global_mlp(global_vecs)
     
-        x = torch.cat([player,enemy,party,map,pixels,global_vecs], dim=-1)
+        #print("battle_repr", battle_repr.shape)
+        #print("party", party.shape)
+        #print("map", map.shape)
+        #print("pixels", pixels.shape)
+        #print("global_vecs", global_vecs.shape)
+        x = torch.cat([battle_repr,party,map,pixels,global_vecs], dim=-1)
+        #print(state['inbattle'])
 
-        return self.final(x)
+        return [self.final(x),state['inbattle']]
 
 
 

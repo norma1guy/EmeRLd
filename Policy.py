@@ -9,17 +9,33 @@ class Actor(torch.nn.Module):
 
         self.encoder = StateEncoder().to(device=device)
 
-        self.actor_net = torch.nn.Sequential(
+        self.overworld_net = torch.nn.Sequential(
             torch.nn.Linear(256, 128),
             torch.nn.ReLU(),
             torch.nn.Linear(128, 128),
             torch.nn.ReLU(),
             torch.nn.Linear(128,7)
         )
+        self.battle_net = torch.nn.Sequential(
+            torch.nn.Linear(256,128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128,128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128,7)
+        )
 
     def forward(self, td):
-        x = self.encoder(td)
-        logits = self.actor_net(x)
+        x, inbattle = self.encoder(td)
+
+        overworld_logits = self.overworld_net(x)
+        battle_logits = self.battle_net(x)
+
+        logits = torch.where(
+            inbattle.bool(),
+            battle_logits,
+            overworld_logits
+        )
+
         return logits
 
 class Critic(torch.nn.Module):
@@ -39,6 +55,6 @@ class Critic(torch.nn.Module):
         )
 
     def forward(self, td):
-        x = self.encoder(td)
+        x,inbattle = self.encoder(td)
         state_value = self.critic_net(x)
         return state_value
