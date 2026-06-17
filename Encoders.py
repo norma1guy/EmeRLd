@@ -163,7 +163,7 @@ class StateEncoder(nn.Module):
         self.pixel_encoder = PixelEncoder()
         self.party_encoder = nn.Linear(2, 128)
         self.global_mlp = nn.Sequential(
-            nn.Linear(11 + 8 * 2,32),
+            nn.Linear(12 + 8 * 2,32),
             nn.ReLU(),
         )
         self.final = nn.Sequential(
