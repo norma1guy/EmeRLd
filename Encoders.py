@@ -167,7 +167,7 @@ class StateEncoder(nn.Module):
             nn.ReLU(),
         )
         self.final = nn.Sequential(
-            nn.Linear(128 * 3 + 7 + 32 + 512,256),
+            nn.Linear(128 * 3 + 8 + 32 + 512,256),
             nn.ReLU(),
         )
 

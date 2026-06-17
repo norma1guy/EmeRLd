@@ -824,7 +824,7 @@ class ParallelEnvironment(EnvBase) :
         self.e_lvl = torch.zeros(2, device=self.device, dtype=torch.int64)
         self.e_status = torch.zeros(2, device=self.device, dtype=torch.int64)
         self.hms = torch.zeros(8, device=self.device, dtype=torch.int64)
-        self.coords = torch.zeros(7, device=self.device, dtype=torch.int64)
+        self.coords = torch.zeros(8, device=self.device, dtype=torch.int64)
 
         self.badges = torch.zeros(8, device=self.device, dtype=torch.int64)
         self.npcs_seen = {}
@@ -933,7 +933,7 @@ class ParallelEnvironment(EnvBase) :
                     ),
                     status1 = UnboundedDiscreteTensorSpec(shape=(2,),dtype=torch.int64),
                 ),
-                map = UnboundedDiscreteTensorSpec(shape=(7,),dtype=torch.int64),
+                map = UnboundedDiscreteTensorSpec(shape=(8,),dtype=torch.int64),
                 badge = DiscreteTensorSpec(
                     n=2,
                     shape=(8,),
@@ -978,7 +978,12 @@ class ParallelEnvironment(EnvBase) :
                         n = 2,
                         shape = (1,),
                         dtype = torch.int64,
-                    )
+                    ),
+                    rival103 = DiscreteTensorSpec(
+                        n = 2,
+                        shape= (1,),
+                        dtype= torch.int64,
+                    ),
                 )
             ),
             envsteps = UnboundedDiscreteTensorSpec(
@@ -1059,20 +1064,26 @@ class ParallelEnvironment(EnvBase) :
             prev_x = prev_state['map'][0].item()
             prev_y = prev_state['map'][1].item()
             prev_map_id = prev_state['map'][4].item()
+            map_type = next_state['map'][7].item()
             key1 = (self.curr_map_node,x,y)
             key2 = (prev_map_id,prev_x,prev_y)
 
-            # Decaying reward for visiting a new tile based on the number of visits there
-            if key1 !=  key2 :
-                self.visited[self.curr_map_node].update_count(x,y)
-                count = self.visited[self.curr_map_node].visited_count.get(key1,1)
-                reward += 0.1 * np.exp(-0.99 * count)
+            if self.curr_map_node != prev_map_id :
+                self.visited[self.curr_map_node].reset_tiles()
 
             # Decaying reward for visiting a new town/route/cave based on number
             new_place = next_state['map'][6].item()
             if new_place :
                 self.nodes_visit_count.setdefault(self.curr_map_node,1)
-                reward += 20 * np.exp(-0.99 * self.nodes_visit_count[self.curr_map_node])
+                count = self.nodes_visit_count[self.curr_map_node]
+                reward += 20 * np.exp(-0.99 * count) if map_type != 8 else 5 * np.exp(-0.99 * count)
+
+            # Decaying reward for visiting a new tile based on the number of visits there
+            if key1 !=  key2 :
+                self.visited[self.curr_map_node].update_count(x,y)
+                count = self.visited[self.curr_map_node].visited_count.get(key1,1)
+                map_node_visits = self.nodes_visit_count.get(self.curr_map_node,1)
+                reward += 0.1 * np.exp(-0.99 * count * map_node_visits)
 
         # HMs reward
         if prev_state is None :
@@ -1127,16 +1138,18 @@ class ParallelEnvironment(EnvBase) :
             if battle_outcome == 1 :
                 reward += 1 * np.exp(-0.99 * self.battles)
             if battle_outcome == 2:
-                reward -= 2
+                reward -= 20
                 self.whiteouts += 1
+                if self.whiteouts == 5 :
+                    reward -= 50
 
             if battle_outcome == 4 and next_hp / party_count <= 0.3:
                 reward += 0.5 * np.exp(-0.99 * self.battles)
             elif battle_outcome == 4 and next_hp / party_count > 0.3 :
                 if self.player_battle_mon.lvl - self.enemy_battle_mon.lvl <= 2 :
-                    reward += 1 * np.exp(-0.99 * self.battles)
+                    reward += 0.1 * np.exp(-0.99 * self.battles)
                 else :
-                    reward -= 1.5
+                    reward -= 5
             self.battle_rewards = 0
             self.battle_turns = 0
             self.player_battle_mon.reset()
@@ -1318,18 +1331,14 @@ class ParallelEnvironment(EnvBase) :
         clock_flag = (self.ru8(flags_start + story_flags) // 2) % 2
         rival_mom_flag = (self.ru8(flags_start + story_flags) // pow(2,7) % 2)
         save_prof_flag = (self.ru8(flags_start + story_flags) // 4) % 2
+        rival_103_flag = (self.ru8(flags_start + story_flags + 7) // 4) % 2
 
         return TensorDict(
             {
-                "clock": torch.tensor([clock_flag],
-                                    dtype=torch.int64,
-                                    device=self.device),
-                "rivalmom": torch.tensor([rival_mom_flag],
-                                        dtype=torch.int64,
-                                        device=self.device),
-                "profrescue": torch.tensor([save_prof_flag],
-                                        dtype=torch.int64,
-                                        device=self.device),
+                "clock": torch.tensor([clock_flag],dtype=torch.int64,device=self.device),
+                "rivalmom": torch.tensor([rival_mom_flag],dtype=torch.int64,device=self.device),
+                "profrescue": torch.tensor([save_prof_flag],dtype=torch.int64,device=self.device),
+                "rival103" : torch.tensor([rival_103_flag],dtype=torch.int64,device=self.device),
             },
             batch_size=[]
         )
@@ -1356,6 +1365,7 @@ class ParallelEnvironment(EnvBase) :
         mapId = self.ru16le(saveBlockAddr + 0x32)
         map_group = self.rs8(saveBlockAddr + 0x04)
         map_num = self.rs8(saveBlockAddr + 0x05)
+        map_type = self.ru8(0x37318 + 24)
         new_place = None
         self.curr_map_node = mapId
         is_poke_center = 1 if (map_group >> 8) + map_num in self.poke_centers.pcs.values() else 0
@@ -1376,6 +1386,7 @@ class ParallelEnvironment(EnvBase) :
         self.coords[4] = mapId
         self.coords[5] = visited
         self.coords[6] = new_place
+        self.coords[7] = map_type
 
         return self.coords.clone()
     

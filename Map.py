@@ -14,7 +14,14 @@ class MapNode :
         self.visited.setdefault(x, []).append(y)
         return 0
     
+    def reset_tiles(self):
+
+        for key,value in self.visited_count.items() :
+            self.visited_count[key] = 1
+
+    
     def update_count(self,x,y):
+
         key = (self.mapId,x,y)
         if key in self.visited_count.keys() :
             self.visited_count[key] += 1

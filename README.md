@@ -55,19 +55,23 @@ The environment maintains the state of the game for each frame with the help of 
 
 - Takes *current and previous state* (previous = last frame) as arguments.
 
+- Reward of - 0.001 for every step of environment.
+
+- Story flags for intro of the game with + 10 reward with rest of the rewards locked till clock is set in game.
+
 - Keeps track of location of player to manage **stuck** flag.
 
-- Maximum reward of +10 for obtaining a gym badge.
+- Maximum reward of + 100 for obtaining a gym badge.
 
-- Movement reward of +1 for visting new map locations.
+- Movement reward + 0.1 for every new tile visited with the a decay function of $e^{-0.99 * count of visits}$ and a reward of + 20 for every new location visited on map with the same decay function.
 
-- HM reward of +10 for obtaining a HM.
+- HM reward of + 50 for obtaining a HM.
 
 - PC reward of +0.5 if entering a PC when party is low on HP and + 1.5 reward for healing at the PC.
 
-- NPC interaction reward of +0.1 .
+- NPC interaction reward of + 1 .
 
-- Post battle rewards calculated based on outcome of battle, status of party members and level-up.
+- Post battle rewards calculated based on outcome of battle, for loss - 2, for win + 1 mulitplied by the same reward decay function used for movement but with count of number of battles used and + 0.5 * $reward decay$ when party health is <=30% .
 
 - In battle rewards maintained to be added in post-battle depending on hp,status and exp change.
 
