@@ -1019,7 +1019,7 @@ class ParallelEnvironment(EnvBase) :
         reward = 0
         party_count = self.ru8(0x244e9)
         #print("REWARD CALLED")
-        reward -= 0.001
+        reward -= 0.01
 
 
         # Story reward
@@ -1093,11 +1093,11 @@ class ParallelEnvironment(EnvBase) :
 
         # PokeCenter reward (reset number of battles for higher rewards for battles)
         if not next_state['inbattle'] :
-            if next_state['map'][3].item() == 1 and next_state['party']['hp'].sum() / party_count < 0.3:
+            if next_state['map'][3].item() == 1 and next_state['map'][6].item() == 1 and next_state['party']['hp'].sum() / party_count < 0.3:
                 reward += 0.5 
             for i,j in zip(next_state['party']['hp'],prev_state['party']['hp']) :
-                if i > j and j.item() <= 0.3:
-                    reward += 1.5
+                if i > j and j.item() != 1.0:
+                    reward += 1.5 if j.item() <= 0.3 else 0.1
                     self.battles = 0
     
         # Interaction reward ( maybe add reward for interaction with objects?)
