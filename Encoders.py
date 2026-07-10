@@ -163,11 +163,11 @@ class StateEncoder(nn.Module):
         self.pixel_encoder = PixelEncoder()
         self.party_encoder = nn.Linear(2, 128)
         self.global_mlp = nn.Sequential(
-            nn.Linear(12 + 8 * 2,32),
+            nn.Linear(14 + 8 * 2,32),
             nn.ReLU(),
         )
         self.final = nn.Sequential(
-            nn.Linear(128 * 3 + 8 + 32 + 512,256),
+            nn.Linear(128 * 3 + 10 + 32 + 512,256),
             nn.ReLU(),
         )
 
@@ -214,6 +214,7 @@ class StateEncoder(nn.Module):
             state['battlemovecursor'].float(),
             state['battleoutcome'].float(),
             state['battletype'].float(),
+            state['battles'].float(),
             state['textactive'].float(),
             state['textstate'].float(),
             state['badge'].float(),

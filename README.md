@@ -143,15 +143,29 @@ Combines all other embeddings with battle representation which is then passed to
 
 > **Obtains the final vector from State Encoder and then feed it into a neural network.**
 
-The Actor has 2 neural networks inside it, one for **overworld** other for **battle**. This division was done to ensure a better policy as the 2 scenarios are completly different from each other and contain different rewards.
+The Actor has 2 neural networks inside it, one for **overworld** other for **battle**. This division was done to ensure a better policy as the 2 scenarios are completely different from each other and contain different rewards.
 
 ### Critic
+
+> **Makes use of State Encoder and calculates the value function.**
+
+Has a 3 layer MLP for calculating the value function.
 
 
 
 
 
 ## Trainer
+
+> **Used to handle the training of RL model**
+
+The trainer is used to train the agent. It contains all the hyperparameters along with logging for generating values of relevant metrics after each batch is processed.
+
+- Uses ParallelEnv provided by PyTorch for paralleling running multiple instances of environment.
+- Uses ProbabilisticActor for getting the action.
+- Uses ValueOperator for generating value function.
+- Uses SyncDataCollector for managing the environments.
+- Uses PPO algorithm for training.
 
 
 
