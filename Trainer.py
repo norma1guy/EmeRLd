@@ -44,7 +44,7 @@ class Trainer :
         self.lmda = 0.95
         self.entropy = 0.05
         self.transformed_env = ParallelEnv(
-            3,
+            4,
             [
                 lambda: TransformedEnv(
                     ParallelEnvironment('1'),
@@ -56,6 +56,10 @@ class Trainer :
                 ),
                 lambda: TransformedEnv(
                     ParallelEnvironment('3'),
+                    Compose()
+                ),
+                lambda: TransformedEnv(
+                    ParallelEnvironment('4'),
                     Compose()
                 )  
             ]

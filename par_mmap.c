@@ -14,14 +14,14 @@
 #include <errno.h>
 #define SIZE 256 * 1024 //EWRAM
 #define SIZE2 32 * 1024 //IWRAM
-#define SIZE3 240 * 160 //Pixels
+#define SIZE3 240 * 160 * 3 //Pixels
 
 typedef struct {
     uint32_t input;
     uint32_t size;
     char buffer[SIZE];
     char other_buffer[SIZE2];
-    u_int32_t pixels[SIZE3];
+    uint8_t pixels[SIZE3];;
     
 
 } shm;
@@ -155,7 +155,7 @@ static int shm_write(lua_State *L) {
     char *dest;
     memcpy(h->ptr->buffer, msg, len);
     memcpy(h->ptr->other_buffer, msg2, len2);
-    memcpy(h->ptr->pixels,msg3,len3 * sizeof(uint32_t));
+    memcpy(h->ptr->pixels,msg3,len3);
 
     h->ptr->size = len + len2 + len3;
     sem_post(h->lua);

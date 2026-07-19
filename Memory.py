@@ -47,21 +47,12 @@ class Pixels :
 
     def __init__(self,pixel_buffer,count,offset):
 
-        self.pixels = np.frombuffer(pixel_buffer,
-                                    dtype=np.uint32,
+        self.rgb = np.frombuffer(pixel_buffer,
+                                    dtype=np.uint8,
                                     count=count,
                                     offset=offset
-                                    ).reshape(160,240)
+                                    ).reshape(160,240,3)
         self.inbattle = False
-        self.rgb = self._decode()
-        
-    def _decode(self):
-        r = ((self.pixels >> 16) & 0xFF).astype(np.uint8)
-        g = ((self.pixels >> 8)  & 0xFF).astype(np.uint8)
-        b = ( self.pixels & 0xFF).astype(np.uint8)
-
-        rgb = np.stack([r, g, b], axis=-1)
-        return rgb
     
     def update_pixels(self,inbattle) :
         self.inbattle = inbattle

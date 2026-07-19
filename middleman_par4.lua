@@ -24,7 +24,8 @@ while true do
         local ewram_map = memory.readbyterange_raw(0x0,256 * 1024)
         memory.usememorydomain("IWRAM")
         local iwram_map = memory.readbyterange_raw(0x0, 32 * 1024)
-        shm:write(ewram_map,iwram_map)
+        local pixelbuffer = gui.getframebuffer()
+        shm:write(ewram_map,iwram_map,pixelbuffer)
         input = shm:read()
     end
     if input ~= nil then

@@ -764,13 +764,13 @@ class ParallelEnvironment(EnvBase) :
         self.ewramSize = 256 * 1024
         self.iwramSize = 32 * 1024
         self.pixelCount = 240 * 160
-        self.pixelSize = self.pixelCount * 4
+        self.pixelSize = self.pixelCount * 3
         self.mm = mmap.mmap(self.shm.fd,8 + self.ewramSize + self.iwramSize + self.pixelSize)
         self.shm.close_fd()
         self.input = struct.unpack("I",self.mm[:4])
         self.ewram = Memory(self.mm,8)
         self.iwram = Memory(self.mm,8 + self.ewramSize)
-        self.pixels = Pixels(self.mm,self.pixelCount,8 + self.ewramSize + self.iwramSize)
+        self.pixels = Pixels(self.mm,self.pixelSize,8 + self.ewramSize + self.iwramSize)
         self.is_battle = False
         self.max_battlers = 4
         self.double_battle = False
@@ -1081,8 +1081,8 @@ class ParallelEnvironment(EnvBase) :
             key1 = (self.curr_map_node,x,y)
             key2 = (prev_map_id,prev_x,prev_y)
             new_place = next_state['map'][6].item()
-            #print(next_state['map'][0],next_state['map'][1],next_state['map'][4],next_state['map'][6])
-            #print(self.visited)
+            
+            #print(next_state['storyflags']['clock'])
             if self.curr_map_node != prev_map_id:
                 self.visited[prev_map_id].reset_tiles()
                 if not new_place :
