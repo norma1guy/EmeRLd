@@ -10,7 +10,7 @@ Would be hell of a lot more difficult without the decompilation of the game prov
 
 ## Extracting the RAM from Emulator
 
-- For emulator I make use of BizHawk https://github.com/TASEmulators/BizHawk and have modified the built to expose API for extracting pixel data and RAM depending on the memory domain.
+- For emulator I make use of BizHawk https://github.com/TASEmulators/BizHawk and have modified the build to expose API for extracting pixel data and RAM depending on the memory domain.
 
 - Built a **C module** for Lua to store the extracted data from emulator into **shared memory** for fast IPC. [Serial](/mmap.c) for the serial implementation of the module and [Parallel](/par_mmap.c) when running multiple environments.
 
